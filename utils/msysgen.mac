@@ -1,0 +1,354 @@
+	.z80
+
+	cseg
+
+WBOOT	equ	0000h
+BDOS	equ	0005h
+FCB	equ	005Ch
+
+SYSIMG	equ	0900h
+
+CR	equ	0Dh
+LF	equ	0Ah
+
+;--------------------------------------------------------------------
+
+start:	ld	hl,(BDOS+1)
+	ld	sp,hl
+	call	print
+	db	"MP/M SYSGEN utility for the P112 V1.0",CR,LF,LF,0
+	ld	hl,FCB+1
+	ld	a,(hl)
+	inc	hl
+	and	(hl)
+	cp	'/'
+	jp	z,usage		; display help and return to CCP
+	ld	c,25		; BDOS get current disk
+	call	BDOS
+	ld	(curdsk),a
+	ld	hl,(WBOOT+1)
+	ld	a,18h		; BIOS seldsk offset
+	call	addhla		; HL += A
+	ld	de,BIOS_seldsk
+	ld	bc,8*3		; copy BIOS disk I/O entries
+	ldir	
+	ld	a,(FCB+1)
+	cp	' '		; filename specified?
+	jr	nz,load_file
+	call	print
+	db	"  (Assuming MPMLDR.COM)",CR,LF,0
+;;	jr	loc_1
+;; make 'MPMLDR.COM' FCB at 5Ch
+
+load_file:
+	call	print
+	db	"Reading file... ",0
+	call	rdfile
+loc_1:	call	print
+	db	CR,LF,"Destination drive (^C quits)? ",0
+	call	getch
+	cp	3		; Ctrl-C ?
+	jp	z,loc_3
+	cp	'a'
+	jr	c,loc_2
+	cp	'z'+1
+	jr	nc,loc_2
+	and	5Fh
+loc_2:	call	typea
+	sub	'A'-1
+	ld	(dstdrv),a
+	call	print
+	db	CR,LF,"Place destination disk in drive ",0
+	ld	a,(dstdrv)
+	add	a,'A'-1
+	call	typea
+	call	print
+	db	": and press return to continue... ",0
+waitcr:	call	getch
+	cp	3		; Ctrl-C ?
+	ret	z
+	cp	CR		; Enter ?
+	jr	nz,waitcr
+	call	crlf
+	call	sub_4
+	jp	loc_1
+
+loc_3:	ld	c,13		; BDOS reset disks
+	call	BDOS
+	ld	a,(curdsk)
+	ld	e,a
+	ld	c,14		; BDOS select disk
+	jp	BDOS
+
+;--------------------------------------------------------------------
+
+usage:	call	print
+	db	" MSYSGEN places the MP/M Operating System Image onto the",CR,LF
+	db	" reserved system tracks of a diskette. The user is prompted",CR,LF
+	db	" for a destination drive letter.",CR,LF
+	db	LF
+	db	" Syntax:   ",CR,LF
+	db	LF
+	db	"    MSYSGEN [filename.typ]",CR,LF
+	db	LF
+	db	" Examples:",CR,LF
+	db	LF
+	db	"    MSYSGEN           - Write MPMLDR.COM System Image",CR,LF
+	db	'    MSYSGEN SYS.BIN   - Load "SYS.BIN" image and write to',CR,LF
+	db	"                        system tracks of diskette",CR,LF
+	db	"    MSYSGEN //        - Print this message",CR,LF,0
+	ret
+
+;--------------------------------------------------------------------
+
+rdfile:	ld	de,FCB
+	ld	c,15		; BDOS open file
+	call	BDOS_sav
+	jp	z,nofile
+	ld	hl,20h
+	add	hl,de		; FCB+20h
+	ld	(hl),16
+	ld	hl,SYSIMG-80h
+rdloop:	ld	a,80h
+	call	addhla		; HL += A
+	ex	de,hl
+	ld	c,26		; BDOS set DMA address
+	call	BDOS_sav
+	ex	de,hl
+	ld	c,20		; BDOS read
+	call	BDOS_sav
+	dec	a
+	jr	z,rdloop
+	ld	c,16		; BDOS close file
+	jp	BDOS_sav
+
+;--------------------------------------------------------------------
+
+sub_4:
+	ld	a,(dstdrv)
+	call	bseldsk
+	jp	z,nodrive
+	ld	(dst_DPH),hl
+	ld	a,0Ah		; DPB offset
+	call	addhla		; HL += A
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ex	de,hl
+	ld	(dst_DPB),hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	(dst_spt),de
+	ld	a,0Ch
+	call	addhla		; HL += A
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)		; DE - no. of reserved tracks
+	ld	a,d
+	and	a
+	jp	nz,loc_5
+	or	e
+	jp	z,nosystrk
+	cp	4
+	jr	c,loc_6
+loc_5:	ld	de,2
+loc_6:	ld	b,e
+	ld	de,(dst_spt)
+	ld	hl,0
+loc_7:	add	hl,de		; calculate total number of sectors
+	djnz	loc_7
+	xor	a
+	or	h
+	jp	nz,nosystrk
+	push	hl
+	ld	bc,0
+	call	BIOS_settrk
+	pop	hl
+	ld	c,h
+	ld	b,l
+	ld	de,0
+	ld	hl,SYSIMG	; start of system image in memory
+wrloop:	push	de
+	push	bc
+	push	hl
+	ld	hl,(dst_DPH)
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)		; get xlate table address
+	call	BIOS_sectran	; xlate sector
+	ld	b,h
+	ld	c,l
+	call	BIOS_setsec	; and select it
+	pop	bc
+	push	bc
+	call	BIOS_setdma
+	ld	c,0		; write type = write to allocated
+	call	BIOS_write	; write sector
+	or	a
+	jp	nz,wrerr
+	pop	hl
+	ld	de,80h		; advance ptr
+	add	hl,de
+	pop	bc
+	pop	de
+	dec	b		; decr number of sectors
+	jr	nz,loc_8
+	ld	c,1		; write type = write to directory
+	jp	BIOS_write
+
+loc_8:	inc	c
+	ld	a,(dst_spt)
+	cp	c
+	jr	nz,wrloop
+	inc	de
+	ld	c,0		; reset spt counter
+	push	de
+	push	bc
+	push	hl
+	ld	b,d
+	ld	c,e
+	call	BIOS_settrk	; advance to next track
+	pop	hl
+	pop	bc
+	pop	de
+	jr	wrloop
+
+;--------------------------------------------------------------------
+
+bseldsk:
+	dec	a
+	ld	c,a
+	ld	e,0
+	call	BIOS_seldsk
+	ld	a,h
+	or	l
+	ret	
+
+;--------------------------------------------------------------------
+
+BDOS_sav:
+	push	bc
+	push	de
+	push	hl
+	call	BDOS
+	inc	a
+	pop	hl
+	pop	de
+	pop	bc
+	ret	
+
+;--------------------------------------------------------------------
+; HL += A
+
+addhla:	add	a,l
+	ld	l,a
+	ret	nc
+	inc	h
+	ret	
+
+;--------------------------------------------------------------------
+
+print:	ex	(sp),hl
+	push	af
+pr1:	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,pr2
+	call	typea
+	jr	pr1
+pr2:	pop	af
+	ex	(sp),hl
+	ret	
+
+;--------------------------------------------------------------------
+
+crlf:	ld	a,CR
+	call	typea
+	ld	a,LF
+typea:	push	hl
+	push	de
+	push	bc
+	push	af
+	ld	e,a
+	ld	c,2		; BDOS console output
+	call	BDOS
+	pop	af
+	pop	bc
+	pop	de
+	pop	hl
+	ret	
+
+;--------------------------------------------------------------------
+
+getch:	push	hl
+	push	de
+	push	bc
+waitch:	ld	e,0FFh
+	ld	c,6		; BDOS direct console I/O
+	call	BDOS
+	or	a
+	jr	z,waitch
+	pop	bc
+	pop	de
+	pop	hl
+	ret	
+
+;--------------------------------------------------------------------
+
+wrerr:
+	call	print
+	db	"+++ Write error.",0
+	jp	exit
+
+nodrive:
+	call	print
+	db	"+++ Drive doesn't exist.",0
+	jr	exit
+
+nosystrk:
+	call	print
+	db	"+++ Can't save system.",0
+	jr	exit
+
+nofile:
+	call	print
+	db	"+++ File not found.",0
+exit:	call	crlf
+	ld	hl,WBOOT
+	jp	(hl)
+
+;--------------------------------------------------------------------
+
+BIOS_seldsk:
+	jp	0
+
+BIOS_settrk:
+	jp	0
+
+BIOS_setsec:
+	jp	0
+
+BIOS_setdma:
+	jp	0
+
+	jp	0		; BIOS read not used
+
+BIOS_write:
+	jp	0
+
+	jp	0		; BIOS listst not used
+
+BIOS_sectran:
+	jp	0
+
+;--------------------------------------------------------------------
+
+dst_spt:ds	2		; CP/M "sectors" per track
+dst_DPH:ds	2
+dst_DPB:ds	2
+curdsk:	ds	1
+dstdrv:	ds	1
+
+	end	start
+

@@ -1,0 +1,29 @@
+xsub
+era boottrk.bin
+ddtz
+f100,7fff,0
+nbootsec.bin
+l800
+nmpmldr.com
+la00
+a8000
+lxi h,900
+lxi d,200
+xra a
+add m
+inx h
+dcr e
+jnz 8007
+dcr d
+jnz 8007
+cma
+inr a
+sta aff
+rst 7
+.
+g8000
+nboottrk.bin
+w
+g0
+;psysgen boottrk.bin
+
