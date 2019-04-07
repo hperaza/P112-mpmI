@@ -1,6 +1,6 @@
 # MP/M 1.1 XIOS for the P112
 
-Featues:
+Features:
 
 * Support for two consoles: the main terminal at 19200 baud, the second at
 9600 baud. The baud rates are fixed in this version.
